@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#111111">
   <title>oncall</title>
   <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="icon.svg">
-  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="icon" href="icon-192.png" type="image/png">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #111; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 16px; max-width: 600px; margin: 0 auto; overscroll-behavior-y: contain; }
@@ -34,6 +34,15 @@
     #pull-indicator { text-align: center; color: #888; font-size: 0.85em; padding: 8px 0; display: none; }
     #sub-count { font-size: 0.85em; color: #888; margin-bottom: 12px; }
     #sub-count button { background: none; color: #f44; border: 1px solid #f44; padding: 4px 10px; font-size: 0.8em; border-radius: 4px; margin-left: 8px; }
+    .ui-form { margin-top: 8px; }
+    .ui-form label { display: block; margin: 6px 0 2px; font-size: 0.85em; color: #aaa; }
+    .ui-form input[type=text], .ui-form select { width: 100%; background: #222; color: #eee; border: 1px solid #333; border-radius: 4px; padding: 6px 8px; font-size: 0.9em; }
+    .ui-form .radio-group, .ui-form .checkbox-group { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 4px; }
+    .ui-form .radio-group label, .ui-form .checkbox-group label { color: #eee; font-size: 0.9em; }
+    .ui-form button.ui-submit { margin-top: 10px; background: #0af; color: #111; border: none; padding: 8px 14px; border-radius: 6px; font-size: 0.9em; cursor: pointer; }
+    .ui-form button.ui-submit:disabled { opacity: 0.4; }
+    .data-summary { margin-top: 6px; font-size: 0.85em; color: #0af; }
+    .data-summary span { color: #888; }
   </style>
 </head>
 <body>
@@ -219,13 +228,85 @@
       li.dataset.id = msg.id;
       let html = '<div class="time">' + formatTime(msg.sentAt) + '</div>';
       if (msg.type === 'response') {
-        html += '<div class="body response">' + escapeHtml(msg.body) + '</div>';
+        html += '<div class="body response">' + escapeHtml(msg.body || '') + '</div>';
+        if (msg.data) {
+          html += '<div class="data-summary">';
+          for (const [k, v] of Object.entries(msg.data)) {
+            html += '<span>' + escapeHtml(k) + ':</span> ' + escapeHtml(String(v)) + ' ';
+          }
+          html += '</div>';
+        }
       } else {
         html += '<div><strong>' + escapeHtml(msg.title) + '</strong></div>';
         html += '<div class="body">' + escapeHtml(msg.body) + '</div>';
+        if (msg.ui && Array.isArray(msg.ui)) {
+          html += renderUiForm(msg.id, msg.ui);
+        }
       }
       li.innerHTML = html;
+      if (msg.ui && msg.type === 'notification') {
+        const form = li.querySelector('.ui-form');
+        if (form) {
+          form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            submitUiForm(form, msg.id);
+          });
+        }
+      }
       return li;
+    }
+
+    function renderUiForm(msgId, ui) {
+      let h = '<form class="ui-form" data-msg="' + msgId + '">';
+      for (const el of ui) {
+        h += '<label>' + escapeHtml(el.label || el.name) + '</label>';
+        if (el.type === 'text') {
+          h += '<input type="text" name="' + escapeHtml(el.name) + '" placeholder="' + escapeHtml(el.label || '') + '">';
+        } else if (el.type === 'select') {
+          h += '<select name="' + escapeHtml(el.name) + '">';
+          for (const o of (el.options || [])) {
+            h += '<option value="' + escapeHtml(o) + '">' + escapeHtml(o) + '</option>';
+          }
+          h += '</select>';
+        } else if (el.type === 'radio') {
+          h += '<div class="radio-group">';
+          for (const o of (el.options || [])) {
+            h += '<label><input type="radio" name="' + escapeHtml(el.name) + '" value="' + escapeHtml(o) + '"> ' + escapeHtml(o) + '</label>';
+          }
+          h += '</div>';
+        } else if (el.type === 'checkbox') {
+          h += '<div class="checkbox-group"><label><input type="checkbox" name="' + escapeHtml(el.name) + '" value="' + escapeHtml(el.value || 'true') + '"> ' + escapeHtml(el.label || el.name) + '</label></div>';
+        } else if (el.type === 'button') {
+          h += '<button type="submit" class="ui-submit" name="' + escapeHtml(el.name) + '" value="' + escapeHtml(el.value || '') + '">' + escapeHtml(el.label || 'Submit') + '</button>';
+        }
+      }
+      if (!ui.some(e => e.type === 'button')) {
+        h += '<button type="submit" class="ui-submit">Submit</button>';
+      }
+      h += '</form>';
+      return h;
+    }
+
+    async function submitUiForm(form, messageId) {
+      const fd = new FormData(form);
+      const data = {};
+      for (const [k, v] of fd.entries()) data[k] = v;
+      form.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        if (!cb.checked) data[cb.name] = 'false';
+      });
+      const text = Object.entries(data).map(([k,v]) => k + ': ' + v).join(', ');
+      const btn = form.querySelector('button[type=submit]');
+      if (btn) btn.disabled = true;
+      try {
+        await fetch('/api/respond', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({ messageId, text, data })
+        });
+        form.innerHTML = '<div class="data-summary">submitted</div>';
+      } catch (err) {
+        if (btn) btn.disabled = false;
+      }
     }
 
     function appendMessage(msg) {

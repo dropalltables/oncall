@@ -74,9 +74,21 @@ db.exec(`
     sentAt TEXT NOT NULL DEFAULT (datetime('now')),
     type TEXT NOT NULL CHECK (type IN ('notification', 'response')),
     parentId TEXT,
+    ui TEXT,
+    data TEXT,
     FOREIGN KEY (parentId) REFERENCES messages(id)
   );
+
+  CREATE TABLE IF NOT EXISTS webhooks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    url TEXT UNIQUE NOT NULL,
+    events TEXT NOT NULL DEFAULT 'response',
+    createdAt TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
+
+try { db.exec("ALTER TABLE messages ADD COLUMN ui TEXT"); } catch {}
+try { db.exec("ALTER TABLE messages ADD COLUMN data TEXT"); } catch {}
 
 const stmts = {
   insertSub: db.prepare(
@@ -86,11 +98,16 @@ const stmts = {
   getAllSubs: db.prepare("SELECT * FROM subscriptions ORDER BY createdAt DESC"),
   getSubCount: db.prepare("SELECT COUNT(*) as count FROM subscriptions"),
   insertMessage: db.prepare(
-    "INSERT INTO messages (id, title, body, type, parentId) VALUES (?, ?, ?, ?, ?)"
+    "INSERT INTO messages (id, title, body, type, parentId, ui, data) VALUES (?, ?, ?, ?, ?, ?, ?)"
   ),
   getMessages: db.prepare(
-    "SELECT * FROM messages ORDER BY sentAt DESC LIMIT 100"
+    "SELECT id, title, body, sentAt, type, parentId, ui, data FROM messages ORDER BY sentAt DESC LIMIT 100"
   ),
+  insertWebhook: db.prepare(
+    "INSERT OR REPLACE INTO webhooks (url, events) VALUES (?, ?)"
+  ),
+  deleteWebhook: db.prepare("DELETE FROM webhooks WHERE url = ?"),
+  getAllWebhooks: db.prepare("SELECT * FROM webhooks"),
 };
 
 const app = express();
@@ -139,31 +156,37 @@ app.get("/api/subscriptions", (_req, res) => {
 });
 
 app.post("/api/notify", async (req, res) => {
-  const { title, body, url, tag } = req.body;
+  const { title, body, url, tag, ui } = req.body;
   if (!title || !body) {
     return res.status(400).json({ error: "title and body required" });
   }
 
   const messageId = uuidv4();
-  stmts.insertMessage.run(messageId, title, body, "notification", null);
+  const uiJson = ui ? JSON.stringify(ui) : null;
+  stmts.insertMessage.run(messageId, title, body, "notification", null, uiJson, null);
 
   const subs = stmts.getAllSubs.all();
   const payload = JSON.stringify({ title, body, url, tag, messageId });
   const results = await sendToAll(subs, payload);
 
-  broadcastWs({ type: "notification", messageId, title, body });
+  broadcastWs({ type: "notification", messageId, title, body, ui: ui || null });
+  fireWebhooks("notification", { event: "notification", messageId, title, body });
   res.json({ messageId, results });
 });
 
 app.get("/api/messages", (_req, res) => {
-  const messages = stmts.getMessages.all();
+  const messages = stmts.getMessages.all().map((m) => ({
+    ...m,
+    ui: m.ui ? JSON.parse(m.ui) : null,
+    data: m.data ? JSON.parse(m.data) : null,
+  }));
   res.json({ messages });
 });
 
 app.post("/api/respond", (req, res) => {
-  let { messageId, text } = req.body;
-  if (!text) {
-    return res.status(400).json({ error: "text required" });
+  let { messageId, text, data } = req.body;
+  if (!text && !data) {
+    return res.status(400).json({ error: "text or data required" });
   }
 
   if (!messageId) {
@@ -172,8 +195,10 @@ app.post("/api/respond", (req, res) => {
   }
 
   const responseId = uuidv4();
-  stmts.insertMessage.run(responseId, "Response", text, "response", messageId);
-  broadcastWs({ type: "response", responseId, messageId, text });
+  const dataJson = data ? JSON.stringify(data) : null;
+  stmts.insertMessage.run(responseId, "Response", text || "", "response", messageId, null, dataJson);
+  broadcastWs({ type: "response", responseId, messageId, text, data });
+  fireWebhooks("response", { event: "response", responseId, messageId, text, data });
   res.json({ ok: true, responseId });
 });
 
@@ -198,6 +223,48 @@ app.post("/api/purge", async (_req, res) => {
   );
   broadcastWs({ type: "subscription", count: getSubCount() });
   res.json({ ok: true, removed, remaining: getSubCount() });
+});
+
+async function fireWebhooks(event, payload) {
+  try {
+    const hooks = stmts.getAllWebhooks.all().filter(
+      (h) => h.events === "*" || h.events.split(",").includes(event)
+    );
+    Promise.all(
+      hooks.map((h) =>
+        fetch(h.url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch((err) => console.error(`Webhook ${h.url} failed:`, err.message))
+      )
+    );
+  } catch (err) {
+    console.error("fireWebhooks error:", err.message);
+  }
+}
+
+app.post("/api/webhooks", (req, res) => {
+  const { url, events } = req.body;
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  stmts.insertWebhook.run(url, events || "response");
+  res.json({ ok: true });
+});
+
+app.delete("/api/webhooks", (req, res) => {
+  const { url } = req.body;
+  if (!url) {
+    return res.status(400).json({ error: "url required" });
+  }
+  stmts.deleteWebhook.run(url);
+  res.json({ ok: true });
+});
+
+app.get("/api/webhooks", (_req, res) => {
+  const webhooks = stmts.getAllWebhooks.all();
+  res.json({ webhooks });
 });
 
 async function sendToAll(subs, payload) {
@@ -265,7 +332,7 @@ wss.on("connection", (ws, req) => {
 
     if (msg.type === "notify" && msg.title && msg.body) {
       const messageId = uuidv4();
-      stmts.insertMessage.run(messageId, msg.title, msg.body, "notification", null);
+      stmts.insertMessage.run(messageId, msg.title, msg.body, "notification", null, null, null);
 
       const subs = stmts.getAllSubs.all();
       const payload = JSON.stringify({
