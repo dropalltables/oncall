@@ -34,23 +34,39 @@
   </style>
 </head>
 <body>
-  <h1>oncall</h1>
-  <div id="status"><span class="dot disconnected" id="status-dot"></span><span id="status-text">Disconnected</span></div>
-
-  <div id="ios-install" hidden>
-    <strong>Install this app:</strong> Tap the Share button, then "Add to Home Screen" to enable push notifications.
+  <div id="auth-screen">
+    <h1>oncall</h1>
+    <form id="auth-form" style="margin-top:16px;display:flex;gap:8px">
+      <input id="key-input" type="password" placeholder="API key" autocomplete="off" style="flex:1;background:#222;color:#eee;border:1px solid #333;border-radius:6px;padding:10px;font-size:1em">
+      <button type="submit">Go</button>
+    </form>
+    <div id="auth-error" hidden style="color:#f44;margin-top:8px;font-size:0.85em">Invalid key</div>
   </div>
 
-  <button id="subscribe-btn" hidden>Enable Notifications</button>
+  <div id="app" hidden>
+    <h1>oncall</h1>
+    <div id="status"><span class="dot disconnected" id="status-dot"></span><span id="status-text">Disconnected</span></div>
 
-  <form id="reply-form">
-    <input id="reply-input" type="text" placeholder="Reply..." autocomplete="off">
-    <button type="submit">Send</button>
-  </form>
+    <div id="ios-install" hidden>
+      <strong>Install this app:</strong> Tap the Share button, then "Add to Home Screen" to enable push notifications.
+    </div>
 
-  <ul id="messages"></ul>
+    <button id="subscribe-btn" hidden>Enable Notifications</button>
+
+    <form id="reply-form">
+      <input id="reply-input" type="text" placeholder="Reply..." autocomplete="off">
+      <button type="submit">Send</button>
+    </form>
+
+    <ul id="messages"></ul>
+  </div>
 
   <script>
+    const authScreen = document.getElementById('auth-screen');
+    const authForm = document.getElementById('auth-form');
+    const authError = document.getElementById('auth-error');
+    const keyInput = document.getElementById('key-input');
+    const appDiv = document.getElementById('app');
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
     const subscribeBtn = document.getElementById('subscribe-btn');
@@ -62,17 +78,35 @@
     let ws;
     let vapidPublicKey;
     let reconnectDelay = 1000;
+    let apiKey = localStorage.getItem('oncall_key') || '';
 
-    // iOS standalone detection
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
-    if (isIOS && !isStandalone) {
-      iosInstall.hidden = false;
+    function authHeaders() {
+      return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + apiKey };
     }
 
-    // Fetch VAPID public key
+    authForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      apiKey = keyInput.value.trim();
+      if (!apiKey) return;
+      try {
+        const res = await fetch('/api/vapid-public-key', { headers: { 'Authorization': 'Bearer ' + apiKey } });
+        if (!res.ok) { authError.hidden = false; return; }
+        localStorage.setItem('oncall_key', apiKey);
+        authScreen.hidden = true;
+        appDiv.hidden = false;
+        init();
+      } catch { authError.hidden = false; }
+    });
+
+    if (apiKey) {
+      fetch('/api/vapid-public-key', { headers: { 'Authorization': 'Bearer ' + apiKey } }).then(res => {
+        if (res.ok) { authScreen.hidden = true; appDiv.hidden = false; init(); }
+        else { localStorage.removeItem('oncall_key'); apiKey = ''; }
+      });
+    }
+
     async function getVapidKey() {
-      const res = await fetch('/api/vapid-public-key');
+      const res = await fetch('/api/vapid-public-key', { headers: authHeaders() });
       const data = await res.json();
       vapidPublicKey = data.publicKey;
     }
@@ -91,32 +125,29 @@
     async function init() {
       await getVapidKey();
 
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+      if (isIOS && !isStandalone) iosInstall.hidden = false;
+
       if (!('serviceWorker' in navigator)) return;
       const reg = await navigator.serviceWorker.register('sw.js');
       await navigator.serviceWorker.ready;
 
       const sub = await reg.pushManager.getSubscription();
-      if (sub) {
-        subscribeBtn.hidden = true;
-      } else {
-        subscribeBtn.hidden = false;
-      }
+      subscribeBtn.hidden = !!sub;
 
       subscribeBtn.addEventListener('click', async () => {
         subscribeBtn.disabled = true;
         try {
           const permission = await Notification.requestPermission();
-          if (permission !== 'granted') {
-            subscribeBtn.disabled = false;
-            return;
-          }
+          if (permission !== 'granted') { subscribeBtn.disabled = false; return; }
           const subscription = await reg.pushManager.subscribe({
             userVisibleOnly: true,
             applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
           });
           await fetch('/api/subscribe', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders(),
             body: JSON.stringify(subscription)
           });
           subscribeBtn.hidden = true;
@@ -133,7 +164,7 @@
     // WebSocket
     function connectWebSocket() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(proto + '//' + location.host + '/ws');
+      ws = new WebSocket(proto + '//' + location.host + '/ws?key=' + encodeURIComponent(apiKey));
 
       ws.addEventListener('open', () => {
         statusDot.className = 'dot connected';
@@ -162,7 +193,7 @@
 
     async function loadMessages() {
       try {
-        const res = await fetch('/api/messages');
+        const res = await fetch('/api/messages', { headers: authHeaders() });
         const data = await res.json();
         messagesList.innerHTML = '';
         (data.messages || []).forEach((m) => appendMessage(m));
@@ -217,7 +248,7 @@
       try {
         await fetch('/api/respond', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           body: JSON.stringify({ text: text })
         });
       } catch (err) {

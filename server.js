@@ -8,7 +8,13 @@ const { WebSocketServer } = require("ws");
 const Database = require("better-sqlite3");
 
 const PORT = process.env.PORT || 3000;
+const API_KEY = process.env.API_KEY;
 const DATA_DIR = path.join(__dirname, "data");
+
+if (!API_KEY) {
+  console.error("API_KEY environment variable is required");
+  process.exit(1);
+}
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -87,6 +93,18 @@ const stmts = {
 
 const app = express();
 app.use(express.json());
+
+function checkAuth(req, res, next) {
+  const header = req.headers.authorization;
+  const query = req.query.key;
+  const key = header?.startsWith("Bearer ") ? header.slice(7) : query;
+  if (key !== API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  next();
+}
+
+app.use("/api", checkAuth);
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/vapid-public-key", (_req, res) => {
@@ -199,7 +217,12 @@ function broadcastWs(data) {
   }
 }
 
-wss.on("connection", (ws) => {
+wss.on("connection", (ws, req) => {
+  const url = new URL(req.url, "http://localhost");
+  if (url.searchParams.get("key") !== API_KEY) {
+    ws.close(4401, "Unauthorized");
+    return;
+  }
   ws.send(JSON.stringify({ type: "init", count: getSubCount() }));
 
   ws.on("message", async (raw) => {
