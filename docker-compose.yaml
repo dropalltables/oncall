@@ -2,6 +2,7 @@ services:
   oncall:
     build: .
     environment:
+      - SERVICE_FQDN_ONCALL_3000
       - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:oncall@example.com}
       - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
       - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
