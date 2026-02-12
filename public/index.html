@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#111111">
+  <title>oncall</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #111; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 16px; max-width: 600px; margin: 0 auto; }
+    h1 { font-size: 1.4em; margin-bottom: 8px; }
+    #status { font-size: 0.85em; margin-bottom: 16px; }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .dot.connected { background: #0f0; }
+    .dot.disconnected { background: #f44; }
+    button { background: #0af; color: #111; border: none; padding: 10px 16px; border-radius: 6px; font-size: 1em; cursor: pointer; }
+    button:active { opacity: 0.8; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    #subscribe-btn { margin-bottom: 16px; }
+    #reply-form { display: flex; gap: 8px; margin-bottom: 16px; }
+    #reply-input { flex: 1; background: #222; color: #eee; border: 1px solid #333; border-radius: 6px; padding: 10px; font-size: 1em; }
+    #messages { list-style: none; }
+    #messages li { background: #1a1a1a; padding: 10px 12px; border-radius: 6px; margin-bottom: 6px; font-size: 0.9em; line-height: 1.4; }
+    #messages .time { color: #888; font-size: 0.8em; }
+    #messages .body { margin-top: 2px; }
+    #messages .response { color: #0af; }
+    #ios-install { background: #1a1a1a; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 0.85em; line-height: 1.5; }
+    #ios-install strong { color: #0af; }
+  </style>
+</head>
+<body>
+  <h1>oncall</h1>
+  <div id="status"><span class="dot disconnected" id="status-dot"></span><span id="status-text">Disconnected</span></div>
+
+  <div id="ios-install" hidden>
+    <strong>Install this app:</strong> Tap the Share button, then "Add to Home Screen" to enable push notifications.
+  </div>
+
+  <button id="subscribe-btn" hidden>Enable Notifications</button>
+
+  <form id="reply-form">
+    <input id="reply-input" type="text" placeholder="Reply..." autocomplete="off">
+    <button type="submit">Send</button>
+  </form>
+
+  <ul id="messages"></ul>
+
+  <script>
+    const statusDot = document.getElementById('status-dot');
+    const statusText = document.getElementById('status-text');
+    const subscribeBtn = document.getElementById('subscribe-btn');
+    const replyForm = document.getElementById('reply-form');
+    const replyInput = document.getElementById('reply-input');
+    const messagesList = document.getElementById('messages');
+    const iosInstall = document.getElementById('ios-install');
+
+    let ws;
+    let vapidPublicKey;
+    let reconnectDelay = 1000;
+
+    // iOS standalone detection
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isStandalone = window.navigator.standalone === true || window.matchMedia('(display-mode: standalone)').matches;
+    if (isIOS && !isStandalone) {
+      iosInstall.hidden = false;
+    }
+
+    // Fetch VAPID public key
+    async function getVapidKey() {
+      const res = await fetch('/api/vapid-public-key');
+      const data = await res.json();
+      vapidPublicKey = data.publicKey;
+    }
+
+    // URL-safe base64 to Uint8Array
+    function urlBase64ToUint8Array(base64String) {
+      const padding = '='.repeat((4 - base64String.length % 4) % 4);
+      const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+      const raw = atob(base64);
+      const arr = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+      return arr;
+    }
+
+    // Service worker + push subscription
+    async function init() {
+      await getVapidKey();
+
+      if (!('serviceWorker' in navigator)) return;
+      const reg = await navigator.serviceWorker.register('sw.js');
+      await navigator.serviceWorker.ready;
+
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        subscribeBtn.hidden = true;
+      } else {
+        subscribeBtn.hidden = false;
+      }
+
+      subscribeBtn.addEventListener('click', async () => {
+        subscribeBtn.disabled = true;
+        try {
+          const permission = await Notification.requestPermission();
+          if (permission !== 'granted') {
+            subscribeBtn.disabled = false;
+            return;
+          }
+          const subscription = await reg.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(vapidPublicKey)
+          });
+          await fetch('/api/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(subscription)
+          });
+          subscribeBtn.hidden = true;
+        } catch (err) {
+          console.error('Subscribe failed:', err);
+          subscribeBtn.disabled = false;
+        }
+      });
+
+      connectWebSocket();
+      loadMessages();
+    }
+
+    // WebSocket
+    function connectWebSocket() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+      ws.addEventListener('open', () => {
+        statusDot.className = 'dot connected';
+        statusText.textContent = 'Connected';
+        reconnectDelay = 1000;
+      });
+
+      ws.addEventListener('close', () => {
+        statusDot.className = 'dot disconnected';
+        statusText.textContent = 'Disconnected';
+        setTimeout(connectWebSocket, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+      });
+
+      ws.addEventListener('message', (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'notification') {
+          const m = { id: msg.messageId, title: msg.title, body: msg.body, sentAt: new Date().toISOString(), type: 'notification' };
+          prependMessage(m);
+        } else if (msg.type === 'response') {
+          const m = { id: msg.responseId, title: 'Response', body: msg.text, sentAt: new Date().toISOString(), type: 'response', parentId: msg.messageId };
+          prependMessage(m);
+        }
+      });
+    }
+
+    async function loadMessages() {
+      try {
+        const res = await fetch('/api/messages');
+        const data = await res.json();
+        messagesList.innerHTML = '';
+        (data.messages || []).forEach((m) => appendMessage(m));
+      } catch (err) {
+        console.error('Failed to load messages:', err);
+      }
+    }
+
+    function formatTime(ts) {
+      return new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    function renderMessage(msg) {
+      const li = document.createElement('li');
+      li.dataset.id = msg.id;
+      let html = '<div class="time">' + formatTime(msg.sentAt) + '</div>';
+      if (msg.type === 'response') {
+        html += '<div class="body response">' + escapeHtml(msg.body) + '</div>';
+      } else {
+        html += '<div><strong>' + escapeHtml(msg.title) + '</strong></div>';
+        html += '<div class="body">' + escapeHtml(msg.body) + '</div>';
+      }
+      li.innerHTML = html;
+      return li;
+    }
+
+    function appendMessage(msg) {
+      messagesList.appendChild(renderMessage(msg));
+    }
+
+    function prependMessage(msg) {
+      const existing = messagesList.querySelector('[data-id="' + msg.id + '"]');
+      if (existing) {
+        existing.replaceWith(renderMessage(msg));
+        return;
+      }
+      messagesList.prepend(renderMessage(msg));
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement('div');
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    // Reply
+    replyForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = replyInput.value.trim();
+      if (!text) return;
+      replyInput.value = '';
+      try {
+        await fetch('/api/respond', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: text })
+        });
+      } catch (err) {
+        console.error('Reply failed:', err);
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

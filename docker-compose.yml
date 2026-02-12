@@ -1,0 +1,21 @@
+services:
+  oncall:
+    build: .
+    environment:
+      - VAPID_SUBJECT=${VAPID_SUBJECT:-mailto:oncall@example.com}
+      - VAPID_PUBLIC_KEY=${VAPID_PUBLIC_KEY:-}
+      - VAPID_PRIVATE_KEY=${VAPID_PRIVATE_KEY:-}
+      - PORT=3000
+    volumes:
+      - oncall-data:/app/data
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  oncall-data:
