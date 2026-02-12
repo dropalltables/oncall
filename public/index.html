@@ -12,7 +12,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #111; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 16px; max-width: 600px; margin: 0 auto; }
+    body { background: #111; color: #eee; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 16px; max-width: 600px; margin: 0 auto; overscroll-behavior-y: contain; }
     h1 { font-size: 1.4em; margin-bottom: 8px; }
     #status { font-size: 0.85em; margin-bottom: 16px; }
     .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
@@ -31,6 +31,9 @@
     #messages .response { color: #0af; }
     #ios-install { background: #1a1a1a; padding: 12px; border-radius: 6px; margin-bottom: 16px; font-size: 0.85em; line-height: 1.5; }
     #ios-install strong { color: #0af; }
+    #pull-indicator { text-align: center; color: #888; font-size: 0.85em; padding: 8px 0; display: none; }
+    #sub-count { font-size: 0.85em; color: #888; margin-bottom: 12px; }
+    #sub-count button { background: none; color: #f44; border: 1px solid #f44; padding: 4px 10px; font-size: 0.8em; border-radius: 4px; margin-left: 8px; }
   </style>
 </head>
 <body>
@@ -44,8 +47,10 @@
   </div>
 
   <div id="app" hidden>
+    <div id="pull-indicator">pull to refresh</div>
     <h1>oncall</h1>
     <div id="status"><span class="dot disconnected" id="status-dot"></span><span id="status-text">Disconnected</span></div>
+    <div id="sub-count"></div>
 
     <div id="ios-install" hidden>
       <strong>Install this app:</strong> Tap the Share button, then "Add to Home Screen" to enable push notifications.
@@ -67,6 +72,8 @@
     const authError = document.getElementById('auth-error');
     const keyInput = document.getElementById('key-input');
     const appDiv = document.getElementById('app');
+    const pullIndicator = document.getElementById('pull-indicator');
+    const subCountDiv = document.getElementById('sub-count');
     const statusDot = document.getElementById('status-dot');
     const statusText = document.getElementById('status-text');
     const subscribeBtn = document.getElementById('subscribe-btn');
@@ -159,6 +166,7 @@
 
       connectWebSocket();
       loadMessages();
+      loadSubCount();
     }
 
     // WebSocket
@@ -254,6 +262,46 @@
       } catch (err) {
         console.error('Reply failed:', err);
       }
+    });
+
+    async function loadSubCount() {
+      try {
+        const res = await fetch('/api/subscriptions', { headers: authHeaders() });
+        const data = await res.json();
+        subCountDiv.innerHTML = data.count + ' subscription' + (data.count !== 1 ? 's' : '');
+        if (data.count > 0) {
+          subCountDiv.innerHTML += ' <button onclick="purgeStale()">purge stale</button>';
+        }
+      } catch {}
+    }
+
+    async function purgeStale() {
+      try {
+        await fetch('/api/purge', { method: 'POST', headers: authHeaders() });
+        loadSubCount();
+      } catch {}
+    }
+
+    let touchStartY = 0;
+    let pulling = false;
+    appDiv.addEventListener('touchstart', (e) => {
+      if (window.scrollY === 0) touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+    appDiv.addEventListener('touchmove', (e) => {
+      const dy = e.touches[0].clientY - touchStartY;
+      if (window.scrollY === 0 && dy > 60 && touchStartY > 0) {
+        pulling = true;
+        pullIndicator.style.display = 'block';
+      }
+    }, { passive: true });
+    appDiv.addEventListener('touchend', async () => {
+      if (pulling) {
+        pulling = false;
+        await loadMessages();
+        await loadSubCount();
+        pullIndicator.style.display = 'none';
+      }
+      touchStartY = 0;
     });
 
     init();

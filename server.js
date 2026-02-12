@@ -177,6 +177,29 @@ app.post("/api/respond", (req, res) => {
   res.json({ ok: true, responseId });
 });
 
+app.post("/api/purge", async (_req, res) => {
+  const subs = stmts.getAllSubs.all();
+  let removed = 0;
+  await Promise.all(
+    subs.map(async (sub) => {
+      const pushSub = {
+        endpoint: sub.endpoint,
+        keys: { p256dh: sub.keys_p256dh, auth: sub.keys_auth },
+      };
+      try {
+        await webpush.sendNotification(pushSub, JSON.stringify({ title: "oncall", body: "subscription verified" }), { TTL: 0 });
+      } catch (err) {
+        if (err.statusCode === 404 || err.statusCode === 410) {
+          stmts.deleteSub.run(sub.endpoint);
+          removed++;
+        }
+      }
+    })
+  );
+  broadcastWs({ type: "subscription", count: getSubCount() });
+  res.json({ ok: true, removed, remaining: getSubCount() });
+});
+
 async function sendToAll(subs, payload) {
   const results = { sent: 0, failed: 0, removed: 0, errors: [] };
 
