@@ -34,7 +34,9 @@ function loadVapidKeys() {
   }
 
   if (fs.existsSync(vapidPath)) {
-    return JSON.parse(fs.readFileSync(vapidPath, "utf-8"));
+    const stored = JSON.parse(fs.readFileSync(vapidPath, "utf-8"));
+    if (envSubject) stored.subject = envSubject;
+    return stored;
   }
 
   const keys = webpush.generateVAPIDKeys();
