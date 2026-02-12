@@ -1,8 +1,9 @@
 {
   "name": "oncall",
   "version": "1.0.0",
-  "private": true,
+  "description": "Self-hosted push notifications with REST and WebSocket APIs",
   "main": "server.js",
+  "license": "AGPL-3.0",
   "scripts": {
     "start": "node server.js"
   },

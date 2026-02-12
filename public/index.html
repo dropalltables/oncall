@@ -127,7 +127,6 @@
       vapidPublicKey = data.publicKey;
     }
 
-    // URL-safe base64 to Uint8Array
     function urlBase64ToUint8Array(base64String) {
       const padding = '='.repeat((4 - base64String.length % 4) % 4);
       const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
@@ -137,7 +136,6 @@
       return arr;
     }
 
-    // Service worker + push subscription
     async function init() {
       await getVapidKey();
 
@@ -178,7 +176,6 @@
       loadSubCount();
     }
 
-    // WebSocket
     function connectWebSocket() {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(proto + '//' + location.host + '/ws?key=' + encodeURIComponent(apiKey));
@@ -328,7 +325,6 @@
       return d.innerHTML;
     }
 
-    // Reply
     replyForm.addEventListener('submit', async (e) => {
       e.preventDefault();
       const text = replyInput.value.trim();

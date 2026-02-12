@@ -268,7 +268,7 @@ app.get("/api/webhooks", (_req, res) => {
 });
 
 async function sendToAll(subs, payload) {
-  const results = { sent: 0, failed: 0, removed: 0, errors: [] };
+  const results = { sent: 0, failed: 0, removed: 0 };
 
   await Promise.all(
     subs.map(async (sub) => {
@@ -281,11 +281,6 @@ async function sendToAll(subs, payload) {
         results.sent++;
       } catch (err) {
         results.failed++;
-        results.errors.push({
-          status: err.statusCode,
-          body: err.body,
-          endpoint: sub.endpoint.slice(0, 60) + "...",
-        });
         if (err.statusCode === 404 || err.statusCode === 410) {
           stmts.deleteSub.run(sub.endpoint);
           results.removed++;
