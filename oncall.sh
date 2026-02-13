@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${ONCALL_URL:?Set ONCALL_URL (e.g. https://oncall.viruus.zip)}"
-: "${ONCALL_KEY:?Set ONCALL_KEY}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+[ -f "$SCRIPT_DIR/.env" ] && . "$SCRIPT_DIR/.env"
+
+: "${ONCALL_URL:?Set ONCALL_URL in .env or environment}"
+: "${ONCALL_KEY:?Set ONCALL_KEY in .env or environment}"
 
 cmd="${1:-help}"
 shift || true
